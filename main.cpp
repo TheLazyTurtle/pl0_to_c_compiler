@@ -1,4 +1,5 @@
 #include <cstdarg>
+#include <endian.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +19,7 @@
 
 static char *raw;
 static size_t line = 1;
+static size_t depth = 0;
 
 static char* token;
 static int type;
@@ -184,47 +186,168 @@ again:
 	return 0;
 }
 
-void parse(void) {
-	while ((type = lex()) != 0) 
-	{
-		raw++;
-		printf("%lu|%d\t", line, type);
+static void next(void) {
+	type = lex();
+	++raw;
+}
+
+static void expect(int match) {
+	if (match != type) {
+		error("syntax error");
+	}
+
+	next();
+}
+
+static void expression(void);
+
+static void factor(void) {
+	switch (type) {
+		case TOK_IDENT:
+		case TOK_NUMBER:
+			next();
+			break;
+		case TOK_LPAREN:
+			expect(TOK_LPAREN);
+			expression();
+			expect(TOK_RPAREN);
+	}
+}
+
+static void term(void) {
+	factor();
+	while (type == TOK_MULTIPLY || type == TOK_DIVIDE) {
+		next();
+		factor();
+	}
+}
+
+static void expression(void) {
+	if (type == TOK_PLUS || type == TOK_MINUS) {
+		next();
+	}
+
+	term();
+	while (type == TOK_PLUS || type == TOK_MINUS) {
+		next();
+		term();
+	}
+}
+
+static void condition(void) {
+	if (type == TOK_ODD) {
+		expect(TOK_ODD);
+		expression();
+	}
+	else {
+		expression();
+
 		switch (type) {
-			case TOK_IDENT:
-			case TOK_NUMBER:
-			case TOK_CONST:
-			case TOK_VAR:
-			case TOK_PROCEDURE:
-			case TOK_CALL:
-			case TOK_BEGIN:
-			case TOK_END:
-			case TOK_IF:
-			case TOK_THEN:
-			case TOK_WHILE:
-			case TOK_DO:
-			case TOK_ODD:
-				printf("%s", token);
-				break;
-			case TOK_DOT:
 			case TOK_EQUAL:
-			case TOK_COMMA:
-			case TOK_SEMICOLON:
 			case TOK_HASH:
 			case TOK_LESSTHAN:
 			case TOK_GREATERTHAN:
-			case TOK_PLUS:
-			case TOK_MINUS:
-			case TOK_MULTIPLY:
-			case TOK_DIVIDE:
-			case TOK_LPAREN:
-			case TOK_RPAREN:
-				printf("%d", type);
+				next();
 				break;
-			case TOK_ASSIGN:
-				printf(":=");
+			default:
+				error("invalid conditional");
 		}
-		printf("\n");
+
+		expression();
 	}
+}
+
+static void statement(void) {
+	switch (type) {
+		case TOK_IDENT:
+			expect(TOK_IDENT);
+			expect(TOK_ASSIGN);
+			expression();
+			break;
+		case TOK_CALL:
+			expect(TOK_CALL);
+			expect(TOK_IDENT);
+			break;
+		case TOK_BEGIN:
+			expect(TOK_BEGIN);
+			statement();
+			while (type == TOK_SEMICOLON) {
+				expect(TOK_SEMICOLON);
+				statement();
+			}
+			expect(TOK_END);
+			break;
+		case TOK_IF:
+			expect(TOK_IF);
+			condition();
+			expect(TOK_THEN);
+			statement();
+			break;
+		case TOK_WHILE:
+			expect(TOK_WHILE);
+			condition();
+			expect(TOK_DO);
+			statement();
+			break;
+		// No default by design
+	}
+}
+
+static void block(void) {
+	if (depth++ > 1) {
+		error("nesting depth exceeded");
+	}
+
+	if (type == TOK_CONST) {
+		expect(TOK_CONST);
+		expect(TOK_IDENT);
+		expect(TOK_EQUAL);
+		expect(TOK_NUMBER);
+
+		while (type == TOK_COMMA) {
+			expect(TOK_COMMA);
+			expect(TOK_IDENT);
+			expect(TOK_EQUAL);
+			expect(TOK_NUMBER);
+		}
+		expect(TOK_SEMICOLON);
+	}
+
+	if (type == TOK_VAR) {
+		expect(TOK_VAR);
+		expect(TOK_IDENT);
+
+		while (type == TOK_COMMA) {
+			expect(TOK_COMMA);
+			expect(TOK_IDENT);
+		}
+
+		expect(TOK_SEMICOLON);
+	}
+
+	while (type == TOK_PROCEDURE) {
+		expect(TOK_PROCEDURE);
+		expect(TOK_IDENT);
+		expect(TOK_SEMICOLON);
+
+		block();
+		expect(TOK_SEMICOLON);
+	}
+
+	statement();
+
+	if (depth-- < 0) {
+		error("nesting depth fell below 0");
+	}
+}
+
+static void parse(void) {
+	next();
+	block();
+	expect(TOK_DOT);
+
+	if (type != 0)
+		error("extra tokens at end of file");
 }
 
 static void readin(char* file) {
