@@ -16,6 +16,7 @@
 #include <malloc.h>
 #include <ctype.h>
 #include "tokens.h"
+#include "strtonum.c"
 
 static char *raw;
 static size_t line = 1;
@@ -45,7 +46,7 @@ static void comment(void) {
 		}
 
 		if (ch == '\n') {
-			line++;
+			++line;
 		}
 	}
 }
@@ -56,11 +57,11 @@ static int ident(void) {
 
 	p = raw;
 	while (isalnum(*raw) || *raw == '_') {
-		raw++;
+		++raw;
 	}
 
 	len = raw - p;
-	raw--;
+	--raw;
 
 	free(token);
 
@@ -101,16 +102,17 @@ static int ident(void) {
 }
 
 static int number(void) {
+	const char *errstr;
 	char* p;
 	size_t i, j = 0, len;
 
 	p = raw;
 	while(isdigit(*raw) || *raw == '_') {
-		raw++;
+		++raw;
 	}
 
 	len = raw - p;
-	raw--;
+	--raw;
 
 	free(token);
 
@@ -122,20 +124,14 @@ static int number(void) {
 		if (isdigit(*p)) {
 			token[j++] = *p;
 		}
-		p++;
+		++p;
 	}
 
 	token[j] = '\0';
 
-	char* endptr;
-	unsigned long num = strtoul(token, &endptr, 10);
-
-	if (*endptr != '\0' || endptr == token) {
-		error("invalid number: %s\n", token);
-	}
-	else if (num > LONG_MAX) {
-		error("number exceeds LONG_MAX: %lu\n", num);
-	}
+	(void) strtonum(token, 0, LONG_MAX, &errstr);
+	if (errstr != NULL)
+		error("invalid number: %s", token);
 
 	return TOK_NUMBER;
 }
@@ -144,7 +140,7 @@ static int lex(void) {
 again: 
 	while (*raw == ' ' || *raw == '\t' || *raw == '\n') {
 		if (*raw++ == '\n') {
-			line++;
+			++line;
 		}
 	}
 
@@ -175,8 +171,10 @@ again:
 		case ')':
 			return (*raw);
 		case ':':
-			if (*raw++ != '=')
+			if (*++raw != '=') {
 				error("unknown token: ':%c'", *raw);
+			}
+			return TOK_ASSIGN;
 		case '\0':
 			return 0;
 		default:
@@ -188,6 +186,7 @@ again:
 
 static void next(void) {
 	type = lex();
+	printf("%c\n", type);
 	++raw;
 }
 
@@ -288,7 +287,6 @@ static void statement(void) {
 			condition();
 			expect(TOK_DO);
 			statement();
-			break;
 		// No default by design
 	}
 }
@@ -336,7 +334,7 @@ static void block(void) {
 
 	statement();
 
-	if (depth-- < 0) {
+	if (--depth < 0) {
 		error("nesting depth fell below 0");
 	}
 }

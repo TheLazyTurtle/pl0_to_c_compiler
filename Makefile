@@ -1,11 +1,14 @@
-CFLAGS = -Wall -lc -lm
-SRC=$(wildcard *.cpp)
+CC = cc
+CFLAGS = -g -O2 -DHAVE_STRTONUM 
+PROG = pl0c
+OBJS = main.o strtonum.o
 
-all: run
+all: ${OBJS}
+	${CC} ${LDFLAGS} -o ${PROG} ${OBJS}
 
-run: build test
-	./build ./tests/test.pl0
+test:
+	cd tests && ./test.sh
 
-build: $(SRC)
-	gcc -o $@ $^ $(CFLAGS)
+clean:
+	rm -f ${PROG} ${OBJS} ${PROG}.core
 
