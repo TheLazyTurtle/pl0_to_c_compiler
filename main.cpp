@@ -18,12 +18,26 @@
 #include "tokens.h"
 #include "strtonum.c"
 
+#define PL0C_VERSION "1.0.0"
+#define CHECK_LHS 0 
+#define CHECK_RHS 1
+#define CHECK_CALL 2
+
+typedef struct symtab {
+	int depth;
+	int type;
+	char* name;
+	struct symtab* next;
+} symbolTabel;
+static symbolTabel* head;
+
 static char *raw;
 static size_t line = 1;
 static size_t depth = 0;
 
 static char* token;
 static int type;
+static int proc;
 
 static void error (const char* fmt, ...) {
 	va_list ap;
@@ -37,6 +51,48 @@ static void error (const char* fmt, ...) {
 
 	exit(1);
 }
+
+/*
+	Semantics
+*/
+
+static void symcheck(int check) {
+	symbolTabel *curr, *ret = NULL;
+
+	curr = head;
+	while (curr != NULL) {
+		if (!strcmp(token, curr->name)) {
+			ret = curr;
+		}
+
+		curr = curr->next;
+	}
+
+	if (ret == NULL) {
+		error("undefined symbol: %s", token);
+	}
+
+	switch(check) {
+		case CHECK_LHS:
+			if (ret->type != TOK_VAR) {
+				error("must be a variable: %s", token);
+			}
+			break;
+		case CHECK_RHS:
+			if (ret->type == TOK_PROCEDURE) {
+				error("must not be a procedure: %s", token);
+			}
+			break;
+		case CHECK_CALL:
+			if (ret->type != TOK_PROCEDURE) {
+				error("must be a procedure: %s", token);
+			}
+	}
+}
+
+/*
+	Lexing
+*/
 
 static void comment(void) {
 	int ch;
@@ -184,9 +240,191 @@ again:
 	return 0;
 }
 
+/*
+	Code Gen
+*/
+
+static void aout(const char* fmt, ...) {
+	va_list ap;
+	va_start (ap, fmt);
+	(void) vfprintf(stdout, fmt, ap);
+
+	va_end(ap);
+}
+
+static void cg_end(void) {
+	aout("/* PL/0 compiler %s */\n", PL0C_VERSION);
+}
+
+static void cg_const(void) {
+	aout("const long %s=", token);
+}
+
+static void cg_semicolon(void) {
+	aout(";\n");
+}
+
+static void cg_crlf(void) {
+	aout("\n");
+}
+
+static void cg_var(void) {
+	aout("long %s;\n", token);
+}
+
+static void cg_procedure(void) {
+	if (proc == 0) {
+		aout("int\n");
+		aout("main(int argc, char* argv[])\n");
+	}
+	else {
+		aout("void\n");
+		aout("%s(void)\n", token);
+	}
+
+	aout("{\n");
+}
+
+
+static void cg_epilogue(void) {
+	aout(";");
+
+	if (proc == 0) {
+		aout("return 0;");
+	}
+
+	aout("\n}\n\n");
+}
+
+static void cg_call(void) {
+	aout("%s();\n", token);
+}
+
+static void cg_odd(void) {
+	aout(")&1");
+}
+
+static void cg_symbol(void) {
+	switch(type) {
+		case TOK_IDENT:
+		case TOK_NUMBER:
+			aout("%s", token);
+			break;
+		case TOK_BEGIN:
+			aout("{\n");
+			break;
+		case TOK_END:
+			aout(";\n}\n");
+			break;
+		case TOK_IF:
+			aout("if(");
+			break;
+		case TOK_THEN:
+		case TOK_DO:
+			aout(")");
+			break;
+		case TOK_ODD:
+			aout("(");
+			break;
+		case TOK_WHILE:
+			aout("while(");
+			break;
+		case TOK_EQUAL:
+			aout("==");
+			break;
+		case TOK_COMMA:
+			aout(",");
+			break;
+		case TOK_ASSIGN:
+			aout("=");
+			break;
+		case TOK_HASH:
+			aout("!=");
+			break;
+		case TOK_LESSTHAN:
+			aout("<");
+			break;
+		case TOK_GREATERTHAN:
+			aout(">");
+			break;
+		case TOK_PLUS:
+			aout("+");
+			break;
+		case TOK_MINUS:
+			aout("-");
+			break;
+		case TOK_MULTIPLY:
+			aout("*");
+			break;
+		case TOK_DIVIDE:
+			aout("/");
+			break;
+		case TOK_LPAREN:
+			aout("(");
+			break;
+		case TOK_RPAREN:
+			aout(")");
+	}
+}
+
+static void addsymbol(int type) {
+	symbolTabel *curr, *newNode;
+	curr = head;
+	while (1) {
+		if (!strcmp(curr->name, token)) {
+			if (curr->depth == (depth - 1)) {
+				error("duplicate symbol: %s", token);
+			}
+		}
+
+		if (curr->next == NULL) {
+			break;
+		}
+
+		curr = curr->next;
+	}
+
+	if ((newNode = (symbolTabel*)malloc(sizeof(symbolTabel))) == NULL) {
+		error("Malloc failed at addsymbol");
+	}
+
+	newNode->depth = depth - 1;
+	newNode->type = type;
+
+	if ((newNode->name = strdup(token)) == NULL) {
+		error("Malloc failed at addsymbol while duplicating name");
+	}
+
+	newNode->next = NULL;
+	curr->next = newNode;
+}
+
+static void destroysymbols(void) {
+	symbolTabel *curr, *prev;
+
+again:
+	curr = head;
+	while (curr->next != NULL) {
+		prev = curr;
+		curr = curr->next;
+	}
+
+	if (curr->type != TOK_PROCEDURE) {
+		free(curr->name);
+		free(curr);
+		prev->next = NULL;
+		goto again;
+	}
+}
+
+
+
+/*
+	Parsing
+*/
+
 static void next(void) {
 	type = lex();
-	printf("%c\n", type);
 	++raw;
 }
 
@@ -203,12 +441,18 @@ static void expression(void);
 static void factor(void) {
 	switch (type) {
 		case TOK_IDENT:
+			symcheck(CHECK_RHS);
+			// intential no break
 		case TOK_NUMBER:
+			cg_symbol();
 			next();
 			break;
 		case TOK_LPAREN:
+			cg_symbol();
 			expect(TOK_LPAREN);
 			expression();
+			if (type == TOK_RPAREN)
+				cg_symbol();
 			expect(TOK_RPAREN);
 	}
 }
@@ -216,6 +460,7 @@ static void factor(void) {
 static void term(void) {
 	factor();
 	while (type == TOK_MULTIPLY || type == TOK_DIVIDE) {
+		cg_symbol();
 		next();
 		factor();
 	}
@@ -223,11 +468,13 @@ static void term(void) {
 
 static void expression(void) {
 	if (type == TOK_PLUS || type == TOK_MINUS) {
+		cg_symbol();
 		next();
 	}
 
 	term();
 	while (type == TOK_PLUS || type == TOK_MINUS) {
+		cg_symbol();
 		next();
 		term();
 	}
@@ -235,8 +482,10 @@ static void expression(void) {
 
 static void condition(void) {
 	if (type == TOK_ODD) {
+		cg_symbol();
 		expect(TOK_ODD);
 		expression();
+		cg_odd();
 	}
 	else {
 		expression();
@@ -246,6 +495,7 @@ static void condition(void) {
 			case TOK_HASH:
 			case TOK_LESSTHAN:
 			case TOK_GREATERTHAN:
+				cg_symbol();
 				next();
 				break;
 			default:
@@ -259,32 +509,56 @@ static void condition(void) {
 static void statement(void) {
 	switch (type) {
 		case TOK_IDENT:
+			symcheck(CHECK_LHS);
+			cg_symbol();
+
 			expect(TOK_IDENT);
+			if (type == TOK_ASSIGN) {
+				cg_symbol();
+			}
+
 			expect(TOK_ASSIGN);
 			expression();
 			break;
 		case TOK_CALL:
 			expect(TOK_CALL);
+			if (type == TOK_IDENT) {
+				symcheck(CHECK_CALL);
+				cg_call();
+			}
 			expect(TOK_IDENT);
 			break;
 		case TOK_BEGIN:
+			cg_symbol();
 			expect(TOK_BEGIN);
 			statement();
 			while (type == TOK_SEMICOLON) {
+				cg_semicolon();
 				expect(TOK_SEMICOLON);
 				statement();
+			}
+			if (type == TOK_END) {
+				cg_symbol();
 			}
 			expect(TOK_END);
 			break;
 		case TOK_IF:
+			cg_symbol();
 			expect(TOK_IF);
 			condition();
+			if (type == TOK_THEN) {
+				cg_symbol();
+			}
 			expect(TOK_THEN);
 			statement();
 			break;
 		case TOK_WHILE:
+			cg_symbol();
 			expect(TOK_WHILE);
 			condition();
+			if (type == TOK_DO) {
+				cg_symbol();
+			}
 			expect(TOK_DO);
 			statement();
 		// No default by design
@@ -298,14 +572,30 @@ static void block(void) {
 
 	if (type == TOK_CONST) {
 		expect(TOK_CONST);
+		if (type == TOK_IDENT) {
+			addsymbol(TOK_CONST);
+			cg_const();
+		}
 		expect(TOK_IDENT);
 		expect(TOK_EQUAL);
+		if (type == TOK_NUMBER) {
+			cg_symbol();
+			cg_semicolon();
+		}
 		expect(TOK_NUMBER);
 
 		while (type == TOK_COMMA) {
 			expect(TOK_COMMA);
+			if (type == TOK_IDENT) {
+				addsymbol(TOK_CONST);
+				cg_const();
+			}
 			expect(TOK_IDENT);
 			expect(TOK_EQUAL);
+			if (type == TOK_NUMBER) {
+				cg_symbol();
+				cg_semicolon();
+			}
 			expect(TOK_NUMBER);
 		}
 		expect(TOK_SEMICOLON);
@@ -313,26 +603,50 @@ static void block(void) {
 
 	if (type == TOK_VAR) {
 		expect(TOK_VAR);
+		if (type == TOK_IDENT) { 
+			addsymbol(TOK_VAR);
+			cg_var();
+		}
 		expect(TOK_IDENT);
 
 		while (type == TOK_COMMA) {
 			expect(TOK_COMMA);
+			if (type == TOK_IDENT) {
+				addsymbol(TOK_VAR);
+				cg_var();
+			}
 			expect(TOK_IDENT);
 		}
 
 		expect(TOK_SEMICOLON);
+		cg_crlf();
 	}
 
 	while (type == TOK_PROCEDURE) {
+		proc = 1;
+
 		expect(TOK_PROCEDURE);
+		if (type == TOK_IDENT) {
+			addsymbol(TOK_PROCEDURE);
+			cg_procedure();
+		}
 		expect(TOK_IDENT);
 		expect(TOK_SEMICOLON);
 
 		block();
 		expect(TOK_SEMICOLON);
+
+		proc = 0;
+		destroysymbols();
+	}
+
+	if (proc == 0) {
+		cg_procedure();
 	}
 
 	statement();
+
+	cg_epilogue();
 
 	if (--depth < 0) {
 		error("nesting depth fell below 0");
@@ -346,6 +660,8 @@ static void parse(void) {
 
 	if (type != 0)
 		error("extra tokens at end of file");
+
+	cg_end();
 }
 
 static void readin(char* file) {
@@ -374,6 +690,20 @@ static void readin(char* file) {
 	(void) close(fd);
 }
 
+static void initsymtab(void) {
+	symbolTabel* newNode;
+	if ((newNode = (symbolTabel*)malloc(sizeof(struct symtab))) == NULL) {
+		error("Malloc failed at initsymtab");
+	}
+
+	newNode->depth = 0;
+	newNode->type = TOK_PROCEDURE;
+	newNode->name = "main";
+	newNode->next = NULL;
+
+	head = newNode;
+}
+
 int main (int argc, char* argv[]) {
 	char* startp;
 
@@ -385,6 +715,7 @@ int main (int argc, char* argv[]) {
 	readin(argv[1]);
 	startp = raw;
 
+	initsymtab();
 	parse();
 	free(startp);
 
